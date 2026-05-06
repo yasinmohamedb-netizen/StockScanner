@@ -1,0 +1,7 @@
+markdown-it-py==4.0.0
+mdurl==0.1.2
+ndiff==7.99
+Pygments==2.20.0
+qrcode==8.2
+rich==15.0.0
+wheel==0.46.3
