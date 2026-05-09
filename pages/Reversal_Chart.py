@@ -2,425 +2,156 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import string
-
+import time
 from streamlit_lightweight_charts import renderLightweightCharts
 
-from utils.styles import load_css
-from utils.nse_data import get_full_nse_data
+# =========================================================
+# PAGE CONFIG & STYLES
+# =========================================================
+st.set_page_config(page_title="NSE Reversal Chart", layout="wide")
+
+# Fallback CSS if utils.styles is not available
+try:
+    from utils.styles import load_css
+    load_css()
+except ImportError:
+    st.markdown("""
+        <style>
+        .main { background-color: #f5f7f9; }
+        stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        </style>
+    """, unsafe_allow_html=True)
 
 # =========================================================
-# LOAD CSS
+# DATA FETCHING (NSE MASTER)
 # =========================================================
-
-load_css()
-
-# =========================================================
-# TITLE
-# =========================================================
-
-st.title("📊 Reversal Chart")
+try:
+    from utils.nse_data import get_full_nse_data
+    all_data = get_full_nse_data()
+except ImportError:
+    # Minimal fallback list if utils is missing
+    all_data = pd.DataFrame({'SYMBOL': ['RELIANCE', 'TCS', 'INFY', 'TATAMOTORS', 'LTIM'], 'SERIES': ['EQ']*5})
 
 # =========================================================
-# NSE DATA
+# SIDEBAR / FILTER PANEL
 # =========================================================
+st.sidebar.header("🛠 Filter Stocks")
 
-all_data = get_full_nse_data()
+alpha_options = ["SHOW ALL", "0-9"] + list(string.ascii_uppercase)
+alpha = st.sidebar.selectbox("Initial Letter", alpha_options)
 
-# =========================================================
-# FILTER PANEL
-# =========================================================
+working_df = all_data[all_data['SERIES'] == 'EQ']
 
-col_watch, col_chart = st.columns([1, 4])
+if alpha == "0-9":
+    working_df = working_df[working_df['SYMBOL'].str[0].str.isdigit()]
+elif alpha != "SHOW ALL":
+    working_df = working_df[working_df['SYMBOL'].str.startswith(alpha)]
 
-# =========================================================
-# LEFT PANEL
-# =========================================================
+search = st.sidebar.text_input("🔍 Quick Search", "").upper()
+filtered_list = working_df['SYMBOL'].tolist()
 
-with col_watch:
+if search:
+    filtered_list = [s for s in filtered_list if search in s]
 
-    st.write("### 🛠 Filter Stocks")
-
-    alpha_options = [
-        "SHOW ALL",
-        "0-9"
-    ] + list(string.ascii_uppercase)
-
-    alpha = st.selectbox(
-        "Initial",
-        alpha_options
-    )
-
-    working_df = all_data[
-        all_data['SERIES'] == 'EQ'
-    ]
-
-    # =====================================================
-    # ALPHABET FILTER
-    # =====================================================
-
-    if alpha == "0-9":
-
-        working_df = working_df[
-            working_df['SYMBOL']
-            .str[0]
-            .str.isdigit()
-        ]
-
-    elif alpha != "SHOW ALL":
-
-        working_df = working_df[
-            working_df['SYMBOL']
-            .str.startswith(alpha)
-        ]
-
-    # =====================================================
-    # SEARCH
-    # =====================================================
-
-    search = st.text_input(
-        "🔍 Quick Search",
-        ""
-    )
-
-    filtered_list = working_df[
-        'SYMBOL'
-    ].tolist()
-
-    if search:
-
-        filtered_list = [
-            s for s in filtered_list
-            if search.upper() in s
-        ]
-
-    # =====================================================
-    # STOCK SELECT
-    # =====================================================
-
-    selected_stock = st.selectbox(
-        "Pick Stock",
-        filtered_list
-    )
-
-    # =====================================================
-    # TIMEFRAME
-    # =====================================================
-
-    timeframe = st.radio(
-        "Timeframe",
-        ("1d", "1wk")
-    )
+selected_stock = st.sidebar.selectbox("Pick Stock", filtered_list if filtered_list else ["TATAMOTORS"])
+timeframe = st.sidebar.radio("Timeframe", ("1d", "1wk"))
 
 # =========================================================
-# CHART PANEL
+# MAIN CHART LOGIC
 # =========================================================
+st.title(f"📊 Reversal Analysis: {selected_stock}")
 
-with col_chart:
+ticker = f"{selected_stock}.NS"
 
-    ticker = f"{selected_stock}.NS"
+try:
+    # 1. Download Data with auto_adjust
+    df = yf.download(ticker, period="1y", interval=timeframe, progress=False, auto_adjust=True)
+    
+    if df.empty:
+        st.error(f"No data found for {ticker}. It might be temporarily rate-limited by Yahoo.")
+        st.stop()
 
-    try:
+    # 2. Multi-Index Header Fix (Critical for yfinance 2024+)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
 
-        # =====================================================
-        # DOWNLOAD DATA
-        # =====================================================
+    df = df.reset_index().dropna()
+    df.columns = [c.lower() for c in df.columns]
 
-        df = yf.download(
-            ticker,
-            period="1y",
-            interval=timeframe,
-            progress=False,
-            auto_adjust=True
-        )
+    # 3. DYNAMIC SUPPORT LOGIC (The 60-Day Lookback)
+    # This keeps support relevant even if the stock is in a long-term uptrend
+    lookback = 60
+    df_recent = df.iloc[-lookback:] if len(df) > lookback else df
+    
+    # Find recent bottom index
+    bottom_idx_recent = df_recent['low'].idxmin()
+    abs_low = round(float(df.loc[bottom_idx_recent, 'low']), 2)
 
-        # =====================================================
-        # MULTI INDEX FIX
-        # =====================================================
+    # 4. LH TARGET LOGIC
+    # Look for the high just before that recent bottom to find the 'breakout' trigger
+    if bottom_idx_recent > 0:
+        lh_target = round(float(df.loc[bottom_idx_recent - 1, 'high']), 2)
+    else:
+        lh_target = round(float(df.loc[bottom_idx_recent, 'high']), 2)
 
-        if isinstance(df.columns, pd.MultiIndex):
+    # 5. TECHNICAL CALCULATIONS
+    ltp = round(float(df['close'].iloc[-1]), 2)
+    df['vol_ma'] = df['volume'].rolling(20).mean()
+    curr_vol = float(df['volume'].iloc[-1])
+    avg_vol = float(df['vol_ma'].iloc[-1]) if pd.notna(df['vol_ma'].iloc[-1]) else 1
+    vol_ratio = curr_vol / avg_vol
+    distance_pct = round(((lh_target - ltp) / ltp) * 100, 2)
 
-            df.columns = df.columns.get_level_values(0)
+    # 6. SIGNAL CLASSIFICATION
+    status = "WAITING"
+    if ltp > lh_target:
+        status = "✅ ALREADY BROKEN OUT"
+    elif 0 <= distance_pct <= 1 and vol_ratio > 1.2:
+        status = "🔥 VERY CLOSE"
+    elif 0 <= distance_pct <= 3:
+        status = "⏳ READY"
+    elif ltp > abs_low and distance_pct <= 8:
+        status = "⚡ EARLY REVERSAL"
 
-        # =====================================================
-        # RESET INDEX
-        # =====================================================
+    # 7. METRICS DISPLAY
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("LTP", f"₹{ltp}")
+    m2.metric("LH Target", f"₹{lh_target}", delta=f"{distance_pct}%", delta_color="inverse")
+    m3.metric("Recent Support", f"₹{abs_low}")
+    m4.metric("Vol Ratio", f"{vol_ratio:.1f}x")
+    m5.metric("Status", status.split()[-1])
 
-        df = df.reset_index()
+    # 8. LIGHTWEIGHT CHART DATA
+    df['time'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+    chart_data = df[['time', 'open', 'high', 'low', 'close']].to_dict('records')
 
-        df.columns = [
-            c.lower()
-            for c in df.columns
-        ]
-
-        # =====================================================
-        # REMOVE NaN
-        # =====================================================
-
-        df = df.dropna()
-
-        # =====================================================
-        # VOLUME MA
-        # =====================================================
-
-        df['vol_ma'] = (
-            df['volume']
-            .rolling(20)
-            .mean()
-        )
-
-        # =====================================================
-        # ORIGINAL REVERSAL LOGIC
-        # =====================================================
-
-        bottom_idx = df['low'].idxmin()
-
-        # =====================================================
-        # ABSOLUTE SUPPORT FLOOR
-        # =====================================================
-
-        abs_low = round(
-            float(
-                df.loc[
-                    bottom_idx,
-                    'low'
-                ]
-            ),
-            2
-        )
-
-        # =====================================================
-        # LH TARGET
-        # =====================================================
-
-        lh_target = round(
-            float(
-                df.loc[
-                    bottom_idx - 1,
-                    'high'
-                ]
-            ),
-            2
-        ) if bottom_idx > 0 else round(
-            float(
-                df.loc[
-                    bottom_idx,
-                    'high'
-                ]
-            ),
-            2
-        )
-
-        # =====================================================
-        # CURRENT PRICE
-        # =====================================================
-
-        ltp = round(
-            float(
-                df['close'].iloc[-1]
-            ),
-            2
-        )
-
-        # =====================================================
-        # VOLUME RATIO
-        # =====================================================
-
-        curr_vol = float(
-            df['volume'].iloc[-1]
-        )
-
-        avg_vol = (
-            float(df['vol_ma'].iloc[-1])
-            if pd.notna(df['vol_ma'].iloc[-1])
-            else 0
-        )
-
-        vol_ratio = (
-            curr_vol / avg_vol
-            if avg_vol > 0
-            else 0
-        )
-
-        # =====================================================
-        # DISTANCE %
-        # =====================================================
-
-        distance_pct = round(
-            (
-                (lh_target - ltp)
-                / ltp
-            ) * 100,
-            2
-        )
-
-        # =====================================================
-        # WATCHLIST LOGIC
-        # =====================================================
-
-        status = None
-
-        # =====================================================
-        # VERY CLOSE
-        # =====================================================
-
-        if (
-            ltp < lh_target
-            and distance_pct >= 0
-            and distance_pct <= 1
-            and vol_ratio > 1.2
-        ):
-
-            status = "🔥 VERY CLOSE"
-
-        # =====================================================
-        # READY
-        # =====================================================
-
-        elif (
-            ltp < lh_target
-            and distance_pct >= 0
-            and distance_pct <= 3
-            and vol_ratio > 1
-        ):
-
-            status = "⏳ READY"
-
-        # =====================================================
-        # EARLY REVERSAL
-        # =====================================================
-
-        elif (
-            ltp > abs_low
-            and ltp < lh_target
-            and distance_pct <= 8
-            and vol_ratio > 1.2
-        ):
-
-            status = "⚡ EARLY REVERSAL"
-
-        # =====================================================
-        # ALREADY BROKEN OUT
-        # =====================================================
-
-        elif ltp > lh_target:
-
-            status = "✅ ALREADY ABOVE LH"
-
-        # =====================================================
-        # CHART DATA
-        # =====================================================
-
-        df['time'] = pd.to_datetime(
-            df['date']
-        ).dt.strftime('%Y-%m-%d')
-
-        chart_df = df[
-            [
-                'time',
-                'open',
-                'high',
-                'low',
-                'close'
-            ]
-        ].copy()
-
-        chart_df = chart_df.fillna(0)
-
-        chart_data = chart_df.to_dict('records')
-
-        # =====================================================
-        # RENDER CHART
-        # =====================================================
-
-        renderLightweightCharts(
-            [
+    # 9. RENDER CHART
+    renderLightweightCharts([
+        {
+            "chart": {
+                "layout": {"background": {"color": "#ffffff"}, "textColor": "#333"},
+                "grid": {"vertLines": {"visible": False}, "horzLines": {"visible": False}},
+                "height": 450,
+            },
+            "series": [
                 {
-                    "chart": {
-                        "layout": {
-                            "background": {
-                                "color": "#ffffff"
-                            },
-                            "textColor": "#000000"
-                        }
-                    },
-                    "series": [
-                        {
-                            "type": "Candlestick",
-                            "data": chart_data
-                        }
-                    ]
+                    "type": "Candlestick",
+                    "data": chart_data,
+                    "options": {
+                        "upColor": "#26a69a", "downColor": "#ef5350",
+                        "borderVisible": False, "wickUpColor": "#26a69a", "wickDownColor": "#ef5350"
+                    }
                 }
-            ],
-            key=f"{ticker}_{timeframe}"
-        )
+            ]
+        }
+    ], key=f"chart_{ticker}")
 
-        # =====================================================
-        # METRICS
-        # =====================================================
+    # 10. ACTIONABLE INSIGHTS
+    if status == "🔥 VERY CLOSE":
+        st.warning(f"**Alert:** Price is within 1% of the LH Target (₹{lh_target}). High volume ({vol_ratio:.1f}x) suggests a breakout attempt.")
+    elif status == "✅ ALREADY ABOVE LH":
+        st.success(f"**Trend Confirmed:** Stock is trading above the structural LH resistance of ₹{lh_target}.")
 
-        m1, m2, m3, m4, m5 = st.columns(5)
-
-        m1.metric(
-            "LTP",
-            f"₹{ltp}"
-        )
-
-        m2.metric(
-            "LH Target",
-            f"₹{lh_target}"
-        )
-
-        m3.metric(
-            "Support Floor",
-            f"₹{abs_low}"
-        )
-
-        m4.metric(
-            "Distance %",
-            f"{distance_pct}%"
-        )
-
-        m5.metric(
-            "Vol Ratio",
-            f"{vol_ratio:.1f}x"
-        )
-
-        # =====================================================
-        # SIGNAL
-        # =====================================================
-
-        if status == "🔥 VERY CLOSE":
-
-            st.warning(
-                f"{status} : Breakout likely soon above ₹{lh_target}"
-            )
-
-        elif status == "⏳ READY":
-
-            st.info(
-                f"{status} : Watching breakout above ₹{lh_target}"
-            )
-
-        elif status == "⚡ EARLY REVERSAL":
-
-            st.success(
-                f"{status} : Reversal structure forming"
-            )
-
-        elif status == "✅ ALREADY ABOVE LH":
-
-            st.success(
-                f"{status} : Stock already crossed LH ₹{lh_target}"
-            )
-
-        else:
-
-            st.info(
-                f"Waiting for proper setup near ₹{lh_target}"
-            )
-
-    except Exception as e:
-
-        st.error(
-            f"Error : {str(e)}"
-        )
+except Exception as e:
+    st.error(f"Technical Error analyzing {selected_stock}: {str(e)}")
+    st.info("Try refreshing the page or checking if the symbol name is correct on Yahoo Finance.")
