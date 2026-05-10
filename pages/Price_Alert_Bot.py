@@ -24,8 +24,8 @@ TELEGRAM_TOKEN = st.secrets[
     "TELEGRAM_TOKEN"
 ]
 
-TELEGRAM_CHAT_ID = st.secrets[
-    "TELEGRAM_CHAT_ID"
+CHAT_IDS = st.secrets[
+    "CHAT_IDS"
 ]
 
 # =========================================================
@@ -91,31 +91,39 @@ def send_telegram(message):
         f"{TELEGRAM_TOKEN}/sendMessage"
     )
 
-    payload = {
+    success = False
 
-        "chat_id": TELEGRAM_CHAT_ID,
+    for chat_id in CHAT_IDS:
 
-        "text": message
+        payload = {
 
-    }
+            "chat_id": chat_id,
 
-    try:
+            "text": message
 
-        response = requests.post(
+        }
 
-            url,
+        try:
 
-            json=payload,
+            response = requests.post(
 
-            timeout=10
+                url,
 
-        )
+                json=payload,
 
-        return response.status_code == 200
+                timeout=10
 
-    except:
+            )
 
-        return False
+            if response.status_code == 200:
+
+                success = True
+
+        except:
+
+            pass
+
+    return success
 
 # =========================================================
 # STOCK LTP
@@ -342,6 +350,12 @@ if len(
     st.session_state.stock_alerts
 ) > 0:
 
+    for alert in st.session_state.stock_alerts:
+
+        alert["current_ltp"] = get_stock_ltp(
+            alert["symbol"]
+        )
+
     stock_df = pd.DataFrame(
         st.session_state.stock_alerts
     )
@@ -373,6 +387,12 @@ st.subheader(
 if len(
     st.session_state.index_alerts
 ) > 0:
+
+    for alert in st.session_state.index_alerts:
+
+        alert["current_ltp"] = get_index_ltp(
+            alert["ticker"]
+        )
 
     index_df = pd.DataFrame(
         st.session_state.index_alerts
@@ -583,7 +603,7 @@ Triggered At:
 
                 print(e)
 
-        time.sleep(20)
+        time.sleep(60)
 
 # =========================================================
 # START ENGINE
@@ -616,5 +636,5 @@ if not st.session_state.alert_engine_started:
 # =========================================================
 
 st.success(
-    "✅ Alert Engine Running Every 20 Seconds"
+    "✅ Alert Engine Running Every 60 Seconds"
 )
