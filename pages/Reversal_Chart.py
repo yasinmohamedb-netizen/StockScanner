@@ -10,7 +10,6 @@ from streamlit_lightweight_charts import renderLightweightCharts
 # =========================================================
 st.set_page_config(page_title="NSE Reversal Chart", layout="wide")
 
-# Fallback CSS if utils.styles is not available
 try:
     from utils.styles import load_css
     load_css()
@@ -29,8 +28,7 @@ try:
     from utils.nse_data import get_full_nse_data
     all_data = get_full_nse_data()
 except ImportError:
-    # Minimal fallback list if utils is missing
-    all_data = pd.DataFrame({'SYMBOL': ['RELIANCE', 'TCS', 'INFY', 'TATAMOTORS', 'LTIM'], 'SERIES': ['EQ']*5})
+    all_data = pd.DataFrame({'SYMBOL': ['RELIANCE', 'TCS', 'INFY', 'TATAMOTORS', 'WIPRO'], 'SERIES': ['EQ']*5})
 
 # =========================================================
 # SIDEBAR / FILTER PANEL
@@ -64,74 +62,107 @@ st.title(f"📊 Reversal Analysis: {selected_stock}")
 ticker = f"{selected_stock}.NS"
 
 try:
-    # 1. Download Data with auto_adjust
-    df = yf.download(ticker, period="1y", interval=timeframe, progress=False, auto_adjust=True)
+    # Fetch data history to calculate 20-day Volume MA and historical trendlines
+    df = yf.download(ticker, period="60d", interval=timeframe, progress=False, auto_adjust=True)
     
     if df.empty:
         st.error(f"No data found for {ticker}. It might be temporarily rate-limited by Yahoo.")
         st.stop()
 
-    # 2. Multi-Index Header Fix (Critical for yfinance 2024+)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
     df = df.reset_index().dropna()
     df.columns = [c.lower() for c in df.columns]
 
-    # 3. DYNAMIC SUPPORT LOGIC (The 60-Day Lookback)
-    # This keeps support relevant even if the stock is in a long-term uptrend
-    lookback = 60
-    df_recent = df.iloc[-lookback:] if len(df) > lookback else df
-    
-    # Find recent bottom index
-    bottom_idx_recent = df_recent['low'].idxmin()
-    abs_low = round(float(df.loc[bottom_idx_recent, 'low']), 2)
+    if len(df) < 35:
+        st.warning("Insufficient data available on this asset to run structural pattern checks.")
+        st.stop()
 
-    # 4. LH TARGET LOGIC
-    # Look for the high just before that recent bottom to find the 'breakout' trigger
-    if bottom_idx_recent > 0:
-        lh_target = round(float(df.loc[bottom_idx_recent - 1, 'high']), 2)
-    else:
-        lh_target = round(float(df.loc[bottom_idx_recent, 'high']), 2)
-
-    # 5. TECHNICAL CALCULATIONS
-    ltp = round(float(df['close'].iloc[-1]), 2)
+    # Calculate indicators
     df['vol_ma'] = df['volume'].rolling(20).mean()
-    curr_vol = float(df['volume'].iloc[-1])
-    avg_vol = float(df['vol_ma'].iloc[-1]) if pd.notna(df['vol_ma'].iloc[-1]) else 1
-    vol_ratio = curr_vol / avg_vol
-    distance_pct = round(((lh_target - ltp) / ltp) * 100, 2)
+    ltp = round(float(df['close'].iloc[-1]), 2)
+    avg_vol = float(df['vol_ma'].iloc[-1]) if pd.notna(df['vol_ma'].iloc[-1]) else 1.0
+    vol_ratio = round(float(df['volume'].iloc[-1]) / avg_vol, 2)
 
-    # 6. SIGNAL CLASSIFICATION
-    status = "WAITING"
-    if ltp > lh_target:
-        status = "✅ ALREADY BROKEN OUT"
-    elif 0 <= distance_pct <= 1 and vol_ratio > 1.2:
-        status = "🔥 VERY CLOSE"
-    elif 0 <= distance_pct <= 3:
-        status = "⏳ READY"
-    elif ltp > abs_low and distance_pct <= 8:
-        status = "⚡ EARLY REVERSAL"
+    # =========================================================
+    # EXACT COPIED ENGINE LOGIC FROM THE TRIPLE SCANNER
+    # =========================================================
+    
+    # 1. Background Trend Check (-25 to -8 days lookback window)
+    trend_df = df.iloc[-25:-8]
+    is_downtrend = False
+    if len(trend_df) >= 12:
+        is_downtrend = trend_df['high'].iloc[:4].mean() > trend_df['high'].iloc[-4:].mean()
 
-    # 7. METRICS DISPLAY
+    # 2. Extract 8-day block windows for Condition 1 & 2
+    block_8d = df.tail(8).copy()
+    breakout_candle = block_8d.iloc[-1]
+    pattern_window = block_8d.iloc[:-1]
+    
+    base_floor = round(float(pattern_window['low'].min()), 2)
+    idx_absolute_low = pattern_window['low'].idxmin()
+    breakout_barrier = round(float(pattern_window['high'].max()), 2)
+
+    # 3. Structural Floor Compression Check
+    consolidation_after_sweep = pattern_window.loc[idx_absolute_low:]
+    floor_buffer = base_floor * 1.025
+    is_valid_base = True
+    
+    for _, row in consolidation_after_sweep.iterrows():
+        if not (base_floor <= float(row['low']) <= floor_buffer):
+            is_valid_base = False
+            break
+
+    # 4. Trigger Breaks Check
+    current_close = float(breakout_candle['close'])
+    current_high = float(breakout_candle['high'])
+    is_breakout_confirmed = current_close >= breakout_barrier or (current_high > breakout_barrier and current_close > float(breakout_candle['open']))
+
+    # 5. Evaluate Condition 3 (Anticipation / Squeeze watchlists)
+    is_not_broken_yet = ltp <= breakout_barrier
+    is_knocking_on_door = ltp >= (breakout_barrier * 0.985)
+    distance_to_pop = round(((breakout_barrier - ltp) / ltp) * 100, 2)
+
+    # =========================================================
+    # CLASSIFY STATUS MATCHES
+    # =========================================================
+    if is_valid_base and is_breakout_confirmed and is_downtrend:
+        status = "🔥 C2: DOWNTREND BREAKOUT"
+        target_display_pct = 0.0
+    elif is_valid_base and is_breakout_confirmed:
+        status = "✅ C1: BASE BREAKOUT"
+        target_display_pct = 0.0
+    elif is_valid_base and is_not_broken_yet and is_knocking_on_door and is_downtrend:
+        status = "⏳ C3: WATCHLIST COIL"
+        target_display_pct = distance_to_pop
+    else:
+        status = "❌ NO SETUP MATCHED"
+        target_display_pct = round(((breakout_barrier - ltp) / ltp) * 100, 2)
+
+    # =========================================================
+    # METRICS DISPLAY
+    # =========================================================
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("LTP", f"₹{ltp}")
-    m2.metric("LH Target", f"₹{lh_target}", delta=f"{distance_pct}%", delta_color="inverse")
-    m3.metric("Recent Support", f"₹{abs_low}")
-    m4.metric("Vol Ratio", f"{vol_ratio:.1f}x")
-    m5.metric("Status", status.split()[-1])
+    m2.metric("Breakout Barrier", f"₹{breakout_barrier}", delta=f"{target_display_pct}% to pop" if target_display_pct > 0 else "Triggered", delta_color="inverse" if target_display_pct > 0 else "normal")
+    m3.metric("Pattern Base Floor", f"₹{base_floor}")
+    m4.metric("Volume Ratio", f"{vol_ratio}x")
+    m5.metric("System Phase Status", status.split()[-1])
 
-    # 8. LIGHTWEIGHT CHART DATA
+    # =========================================================
+    # LIGHTWEIGHT CHART CONFIGURATION
+    # =========================================================
     df['time'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
     chart_data = df[['time', 'open', 'high', 'low', 'close']].to_dict('records')
 
-    # 9. RENDER CHART
+    # Inject horizontal lines directly onto your chart structure
     renderLightweightCharts([
         {
             "chart": {
                 "layout": {"background": {"color": "#ffffff"}, "textColor": "#333"},
                 "grid": {"vertLines": {"visible": False}, "horzLines": {"visible": False}},
-                "height": 450,
+                "height": 480,
             },
             "series": [
                 {
@@ -144,14 +175,21 @@ try:
                 }
             ]
         }
-    ], key=f"chart_{ticker}")
+    ], key=f"chart_{ticker}_{timeframe}")
 
-    # 10. ACTIONABLE INSIGHTS
-    if status == "🔥 VERY CLOSE":
-        st.warning(f"**Alert:** Price is within 1% of the LH Target (₹{lh_target}). High volume ({vol_ratio:.1f}x) suggests a breakout attempt.")
-    elif status == "✅ ALREADY ABOVE LH":
-        st.success(f"**Trend Confirmed:** Stock is trading above the structural LH resistance of ₹{lh_target}.")
+    # =========================================================
+    # ACTIONABLE INSIGHT LABELS
+    # =========================================================
+    st.markdown("### 📋 Market Structure Context Insights")
+    st.write(f"* **Macro Downtrend Context Present:** {'Yes' if is_downtrend else 'No'}")
+    st.write(f"* **8-Day Tight Floor Validated:** {'Yes' if is_valid_base else 'No'}")
+    
+    if "C3" in status:
+        st.warning(f"🎯 **Watchlist Alert:** This asset is coiled tightly in a pre-breakout squeeze! It is sitting just **{distance_to_pop}%** below the critical barrier level (₹{breakout_barrier}).")
+    elif "C2" in status:
+        st.success(f"🚀 **Trend Reversal Confirmed:** Strong structural breakout confirmed at the bottom of a major macro downtrend floor.")
+    elif "C1" in status:
+        st.info(f"📊 **Base Breakout Confirmed:** Stock cleared compression resistance at ₹{breakout_barrier}.")
 
 except Exception as e:
     st.error(f"Technical Error analyzing {selected_stock}: {str(e)}")
-    st.info("Try refreshing the page or checking if the symbol name is correct on Yahoo Finance.")
