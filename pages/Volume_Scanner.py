@@ -19,9 +19,11 @@ if 'c2_results' not in st.session_state:
     st.session_state.c2_results = []
 if 'c3_results' not in st.session_state:
     st.session_state.c3_results = []
+if 'c4_results' not in st.session_state:
+    st.session_state.c4_results = []
 
-st.title("🦅 Three-Stage Institutional Reversal Dashboard")
-st.caption("Table 1: Base Breakouts | Table 2: Downtrend Floor Breakouts | Table 3: Pre-Breakout Coils Ready to Pop")
+st.title("🦅 Four-Stage Institutional Reversal & Squeeze Dashboard")
+st.caption("Table 1: Base Breakouts | Table 2: Deep Downtrend (5-Day Floor) Reversals | Table 3: Pre-Breakout Coils | Table 4: Silent Humming Squeezes")
 
 # =========================================================
 # NIFTY 50 & DATA LISTS
@@ -67,10 +69,11 @@ with col_sc3:
 # =========================================================
 # CORE SCANNING ENGINE
 # =========================================================
-if st.button(f"🚀 Run Triple-Engine Lifecycle Scan"):
+if st.button(f"🚀 Run Quad-Engine Lifecycle Scan"):
     c1_temp_results = []
     c2_temp_results = []
     c3_temp_results = []
+    c4_temp_results = []
     
     progress = st.progress(0)
     status_text = st.empty()
@@ -78,12 +81,12 @@ if st.button(f"🚀 Run Triple-Engine Lifecycle Scan"):
     for i, sym in enumerate(scan_list):
         try:
             status_text.text(f"Processing: {sym} ({i+1}/{len(scan_list)})")
-            time.sleep(0.1)  # Safe rate limit delay
+            time.sleep(0.02)
 
-            # Fetch 50 days of daily data
-            s_df = yf.download(f"{sym}.NS", period="50d", interval="1d", progress=False, auto_adjust=True)
+            # Pull 60 days of data to guarantee room for back-trend calculations
+            s_df = yf.download(f"{sym}.NS", period="60d", interval="1d", progress=False, auto_adjust=True)
             
-            if len(s_df) < 35:
+            if len(s_df) < 40:
                 continue
 
             if isinstance(s_df.columns, pd.MultiIndex):
@@ -97,7 +100,14 @@ if st.button(f"🚀 Run Triple-Engine Lifecycle Scan"):
             if pd.isna(avg_vol) or avg_vol == 0:
                 avg_vol = 1.0
 
-            # Price Filter Check upfront to minimize dictionary processing overhead
+            # -----------------------------------------------------
+            # CRITICAL MASTER VOLUME FILTER (2 LAKH / 200,000 SHARES)
+            # Applies to all subsequent conditions automatically
+            # -----------------------------------------------------
+            if avg_vol < 200000:
+                continue
+
+            # Price Range Filter Upfront Check
             curr_close_check = float(s_df['Close'].iloc[-1])
             price_passed = True
             if price_range != "All":
@@ -109,77 +119,98 @@ if st.button(f"🚀 Run Triple-Engine Lifecycle Scan"):
                 continue
 
             # -----------------------------------------------------
-            # ENGINE 1 & 2 STRUCTURAL PREPARATION
+            # ENGINE 1: STANDARD 8-DAY BASE BREAKOUT (CONDITION 1)
             # -----------------------------------------------------
             block_8d = s_df.tail(8).copy()
             c1_matched = False
-            absolute_low = 0.0
-            max_structural_high = 0.0
             
             if len(block_8d) == 8:
-                breakout_candle = block_8d.iloc[-1]
-                pattern_window = block_8d.iloc[:-1]
+                breakout_candle_c1 = block_8d.iloc[-1]
+                pattern_window_c1 = block_8d.iloc[:-1]
                 
-                absolute_low = float(pattern_window['Low'].min())
-                idx_absolute_low = pattern_window['Low'].idxmin()
-                max_structural_high = float(pattern_window['High'].max())
+                c1_absolute_low = float(pattern_window_c1['Low'].min())
+                idx_c1_low = pattern_window_c1['Low'].idxmin()
+                c1_max_high = float(pattern_window_c1['High'].max())
 
-                consolidation_after_sweep = pattern_window.loc[idx_absolute_low:]
-                floor_buffer = absolute_low * 1.025
-                is_valid_base = True
+                consolidation_after_sweep_c1 = pattern_window_c1.loc[idx_c1_low:]
+                floor_buffer_c1 = c1_absolute_low * 1.025
+                is_valid_base_c1 = True
                 
-                for _, row in consolidation_after_sweep.iterrows():
-                    if not (absolute_low <= float(row['Low']) <= floor_buffer):
-                        is_valid_base = False
+                for _, row in consolidation_after_sweep_c1.iterrows():
+                    if not (c1_absolute_low <= float(row['Low']) <= floor_buffer_c1):
+                        is_valid_base_c1 = False
                         break
 
-                current_close = float(breakout_candle['Close'])
-                current_high = float(breakout_candle['High'])
+                c1_current_close = float(breakout_candle_c1['Close'])
+                c1_current_high = float(breakout_candle_c1['High'])
                 
-                is_breakout_c1 = current_close >= max_structural_high or (current_high > max_structural_high and current_close > float(breakout_candle['Open']))
+                is_breakout_c1 = c1_current_close >= c1_max_high or (c1_current_high > c1_max_high and c1_current_close > float(breakout_candle_c1['Open']))
 
-                # --- TABLE 1: CONDITION 1 MATCHED ---
-                if is_valid_base and is_breakout_c1:
+                if is_valid_base_c1 and is_breakout_c1:
                     c1_matched = True
-                    v_ratio = float(breakout_candle['Volume']) / avg_vol
+                    v_ratio_c1 = float(breakout_candle_c1['Volume']) / avg_vol
                     c1_temp_results.append({
                         "Symbol": sym,
-                        "LTP": round(current_close, 2),
-                        "Breakout Barrier": round(max_structural_high, 2),
-                        "Base Floor": round(absolute_low, 2),
-                        "Vol Ratio": round(v_ratio, 2)
+                        "LTP": round(c1_current_close, 2),
+                        "Breakout Barrier": round(c1_max_high, 2),
+                        "Base Floor": round(c1_absolute_low, 2),
+                        "Vol Ratio": round(v_ratio_c1, 2)
                     })
 
-            # --- TABLE 2: CONDITION 2 MATCHED (TABLE 1 + DOWNTREND) ---
-            trend_df = s_df.iloc[-25:-8]
-            if len(trend_df) >= 12:
-                is_downtrend = trend_df['High'].iloc[:4].mean() > trend_df['High'].iloc[-4:].mean()
+            # -----------------------------------------------------
+            # ENGINE 2: COMPLETE DOWNTREND -> 5-DAY SUPPORT FLOOR -> BREAKOUT
+            # -----------------------------------------------------
+            block_6d = s_df.tail(6).copy()
+            if len(block_6d) == 6:
+                breakout_candle_c2 = block_6d.iloc[-1]
+                floor_window_c2 = block_6d.iloc[:-1]
                 
-                if is_downtrend and c1_matched:
-                    v_ratio_c2 = float(block_8d.iloc[-1]['Volume']) / avg_vol
-                    c2_temp_results.append({
-                        "Symbol": sym,
-                        "LTP": round(float(block_8d.iloc[-1]['Close']), 2),
-                        "Breakout Barrier": round(max_structural_high, 2),
-                        "Downtrend Base Floor": round(absolute_low, 2),
-                        "Vol Ratio": round(v_ratio_c2, 2)
-                    })
+                c2_absolute_low = float(floor_window_c2['Low'].min())
+                c2_max_high = float(floor_window_c2['High'].max())
+                
+                floor_buffer_c2 = c2_absolute_low * 1.025
+                is_valid_5d_floor = True
+                for _, row in floor_window_c2.iterrows():
+                    if not (c2_absolute_low <= float(row['Low']) <= floor_buffer_c2):
+                        is_valid_5d_floor = False
+                        break
+                
+                c2_current_close = float(breakout_candle_c2['Close'])
+                c2_current_high = float(breakout_candle_c2['High'])
+                is_breakout_c2 = c2_current_close >= c2_max_high or (c2_current_high > c2_max_high and c2_current_close > float(breakout_candle_c2['Open']))
+                
+                if is_valid_5d_floor and is_breakout_c2:
+                    trend_df_c2 = s_df.iloc[-21:-6]
+                    if len(trend_df_c2) == 15:
+                        first_half_high = trend_df_c2['High'].iloc[:7].mean()
+                        second_half_high = trend_df_c2['High'].iloc[-7:].mean()
+                        
+                        is_downtrend_c2 = first_half_high > (second_half_high * 1.03)
+                        peak_at_start = trend_df_c2['High'].idxmax() < trend_df_c2.index[7]
+                        
+                        if is_downtrend_c2 and peak_at_start:
+                            v_ratio_c2 = float(breakout_candle_c2['Volume']) / avg_vol
+                            c2_temp_results.append({
+                                "Symbol": sym,
+                                "LTP": round(c2_current_close, 2),
+                                "Breakout Barrier": round(c2_max_high, 2),
+                                "5-Day Floor Support": round(c2_absolute_low, 2),
+                                "Vol Ratio": round(v_ratio_c2, 2)
+                            })
 
             # -----------------------------------------------------
             # ENGINE 3: CONDITION 3 PRE-BREAKOUT ANTICIPATION COIL
             # -----------------------------------------------------
-            # Here, the last 7 days represent the base/sweep, and today is the coiled tracking candle.
             anticipation_window = s_df.tail(8).copy()
             if len(anticipation_window) == 8:
-                current_candle = anticipation_window.iloc[-1]
-                base_history = anticipation_window.iloc[:-1]
+                current_candle_c3 = anticipation_window.iloc[-1]
+                base_history_c3 = anticipation_window.iloc[:-1]
                 
-                c3_absolute_low = float(base_history['Low'].min())
-                c3_idx_low = base_history['Low'].idxmin()
-                c3_ceiling = float(base_history['High'].max())
+                c3_absolute_low = float(base_history_c3['Low'].min())
+                c3_idx_low = base_history_c3['Low'].idxmin()
+                c3_ceiling = float(base_history_c3['High'].max())
                 
-                # Check for structural base validation
-                c3_consolidation = base_history.loc[c3_idx_low:]
+                c3_consolidation = base_history_c3.loc[c3_idx_low:]
                 c3_floor_buffer = c3_absolute_low * 1.025
                 c3_base_valid = True
                 
@@ -189,21 +220,16 @@ if st.button(f"🚀 Run Triple-Engine Lifecycle Scan"):
                         break
                         
                 if c3_base_valid:
-                    c3_close = float(current_candle['Close'])
-                    c3_high = float(current_candle['High'])
+                    c3_close = float(current_candle_c3['Close'])
                     
-                    # ANTICIPATION MATH:
-                    # 1. Price has NOT broken out yet (Close is still below or equal to the structural ceiling)
-                    # 2. Price is knocking on the door: trading within 1.5% of the ceiling (fully compressed coiled spring)
                     is_not_broken_yet = c3_close <= c3_ceiling
                     is_knocking_on_door = c3_close >= (c3_ceiling * 0.985)
                     
-                    # Verify trend backdrop context for quality tracking
                     c3_trend_check = s_df.iloc[-25:-8]
                     c3_is_downtrend = c3_trend_check['High'].iloc[:4].mean() > c3_trend_check['High'].iloc[-4:].mean()
                     
                     if is_not_broken_yet and is_knocking_on_door and c3_is_downtrend:
-                        v_ratio_c3 = float(current_candle['Volume']) / avg_vol
+                        v_ratio_c3 = float(current_candle_c3['Volume']) / avg_vol
                         c3_temp_results.append({
                             "Symbol": sym,
                             "LTP": round(c3_close, 2),
@@ -213,24 +239,49 @@ if st.button(f"🚀 Run Triple-Engine Lifecycle Scan"):
                             "Vol Ratio": round(v_ratio_c3, 2)
                         })
 
+            # -----------------------------------------------------
+            # ENGINE 4: CONDITION 4 THE HUMMING SQUEEZE CLUSTER (NO BREAKOUT)
+            # -----------------------------------------------------
+            hum_block = s_df.tail(4).copy()
+            if len(hum_block) == 4:
+                block_high = float(hum_block['High'].max())
+                block_low = float(hum_block['Low'].min())
+                
+                total_variance_pct = ((block_high - block_low) / block_low) * 100
+                is_humming_range = total_variance_pct <= 2.5
+                
+                distance_to_pop = round(((block_high - curr_close_check) / curr_close_check) * 100, 2)
+                is_primed_to_snap = distance_to_pop <= 0.6
+                
+                if is_humming_range and is_primed_to_snap:
+                    v_ratio_c4 = float(hum_block['Volume'].iloc[-1]) / avg_vol
+                    c4_temp_results.append({
+                        "Symbol": sym,
+                        "LTP": round(curr_close_check, 2),
+                        "Humming Ceiling": round(block_high, 2),
+                        "Humming Floor": round(block_low, 2),
+                        "Cluster Tightness (%)": round(total_variance_pct, 2),
+                        "Distance to Pop (%)": distance_to_pop,
+                        "Vol Ratio": round(v_ratio_c4, 2)
+                    })
+
         except Exception:
             pass
 
         progress.progress((i + 1) / len(scan_list))
 
-    # Save to Streamlit state parameters
     st.session_state.c1_results = c1_temp_results
     st.session_state.c2_results = c2_temp_results
     st.session_state.c3_results = c3_temp_results
+    st.session_state.c4_results = c4_temp_results
     
     status_text.empty()
-    st.success("Lifecycle parsing across all 3 conditions completed!")
+    st.success("Quad-Engine lifecycle scanning parsing completed with Liquidity Filters!")
 
 # =========================================================
 # DISPLAY SEPARATE RESULTS TABLES
 # =========================================================
 
-# TABLE 1: CONDITION 1
 st.markdown("## 📊 Table 1: Standard 8-Day Base-Compression Breakouts (Condition 1)")
 if st.session_state.c1_results:
     df1 = pd.DataFrame(st.session_state.c1_results).sort_values(by="Vol Ratio", ascending=False)
@@ -240,7 +291,6 @@ else:
 
 st.markdown("---")
 
-# TABLE 2: CONDITION 2
 st.markdown("## 📉 Table 2: Deep Downtrend Floor Reversal Breakouts (Condition 2)")
 if st.session_state.c2_results:
     df2 = pd.DataFrame(st.session_state.c2_results).sort_values(by="Vol Ratio", ascending=False)
@@ -250,11 +300,19 @@ else:
 
 st.markdown("---")
 
-# TABLE 3: CONDITION 3 (THE ANTICIPATION WATCHLIST)
-st.markdown("## 🔥 Table 3: Squeeze Watchlist (Coiling Under Resistance, Ready to Break!)")
+st.markdown("## 🌀 Table 3: Squeeze Watchlist (Coiling Under Resistance, Ready to Break!)")
 if st.session_state.c3_results:
-    # Sort by closest proximity to breaking out (Lowest Distance to Pop)
     df3 = pd.DataFrame(st.session_state.c3_results).sort_values(by="Distance to Pop (%)", ascending=True)
     st.dataframe(df3, use_container_width=True, hide_index=True)
 else:
     st.info("No setups currently coiling inside the critical tight pre-breakout sweet spot.")
+
+st.markdown("---")
+
+st.markdown("## 🔥 Table 4: Silent Humming Watchlist (4-Day Ultra-Contraction Pattern)")
+st.caption("No breakouts. These stocks are flatline coiling under 2.5% width—completely quiet before an institutional expansion.")
+if st.session_state.c4_results:
+    df4 = pd.DataFrame(st.session_state.c4_results).sort_values(by="Cluster Tightness (%)", ascending=True)
+    st.dataframe(df4, use_container_width=True, hide_index=True)
+else:
+    st.info("No stocks currently humming inside the ultra-narrow 2.5% compression corridor.")
