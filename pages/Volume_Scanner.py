@@ -100,13 +100,6 @@ if st.button(f"🚀 Run Quad-Engine Lifecycle Scan"):
             if pd.isna(avg_vol) or avg_vol == 0:
                 avg_vol = 1.0
 
-            # -----------------------------------------------------
-            # CRITICAL MASTER VOLUME FILTER (2 LAKH / 200,000 SHARES)
-            # Applies to all subsequent conditions automatically
-            # -----------------------------------------------------
-            if avg_vol < 200000:
-                continue
-
             # Price Range Filter Upfront Check
             curr_close_check = float(s_df['Close'].iloc[-1])
             price_passed = True
@@ -122,7 +115,6 @@ if st.button(f"🚀 Run Quad-Engine Lifecycle Scan"):
             # ENGINE 1: STANDARD 8-DAY BASE BREAKOUT (CONDITION 1)
             # -----------------------------------------------------
             block_8d = s_df.tail(8).copy()
-            c1_matched = False
             
             if len(block_8d) == 8:
                 breakout_candle_c1 = block_8d.iloc[-1]
@@ -147,7 +139,6 @@ if st.button(f"🚀 Run Quad-Engine Lifecycle Scan"):
                 is_breakout_c1 = c1_current_close >= c1_max_high or (c1_current_high > c1_max_high and c1_current_close > float(breakout_candle_c1['Open']))
 
                 if is_valid_base_c1 and is_breakout_c1:
-                    c1_matched = True
                     v_ratio_c1 = float(breakout_candle_c1['Volume']) / avg_vol
                     c1_temp_results.append({
                         "Symbol": sym,
@@ -276,7 +267,7 @@ if st.button(f"🚀 Run Quad-Engine Lifecycle Scan"):
     st.session_state.c4_results = c4_temp_results
     
     status_text.empty()
-    st.success("Quad-Engine lifecycle scanning parsing completed with Liquidity Filters!")
+    st.success("Quad-Engine lifecycle scanning parsing completed successfully!")
 
 # =========================================================
 # DISPLAY SEPARATE RESULTS TABLES
